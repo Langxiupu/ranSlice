@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import math
 import random
-import struct
-import zlib
 from collections import deque
-from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Deque, Dict, Iterable, List, Optional, Sequence
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 # ---------------------------------------------------------------------------
 # Global parameters
@@ -30,6 +34,8 @@ VR_FRAME_MS = round(1000 / VR_FPS)  # ~17 ms
 VR_RATE_PER_APP = 12e6
 VR_JITTER = 0.15
 VR_DEADLINE = 20  # ms
+# Deterministic spectral efficiency multipliers for each VR app (1.0 = reference).
+VR_CHANNEL_QUALITIES = [1.1, 0.95, 0.22, 0.12, 0.08, 0.05]
 
 # File sync traffic
 FS_MEAN_PKT_BITS = 12_000
@@ -60,9 +66,10 @@ class Flow:
         "total_generated_bits",
         "generated_packets",
         "completed_packets",
+        "channel_quality",
     )
 
-    def __init__(self, name: str, kind: str) -> None:
+    def __init__(self, name: str, kind: str, channel_quality: float = 1.0) -> None:
         self.name = name
         self.kind = kind
         self.q: Deque[Packet] = deque()
@@ -71,6 +78,7 @@ class Flow:
         self.total_generated_bits = 0
         self.generated_packets = 0
         self.completed_packets = 0
+        self.channel_quality = channel_quality
 
     def has_backlog(self) -> bool:
         return bool(self.q)
@@ -182,7 +190,6 @@ def schedule_weighted_fair(
         return 0
 
     bits_sent = 0
-    bits_per_rb = max(1, int(round(slice_obj.phi_inst)))
     n = len(slice_obj.flows)
     idx = slice_obj.rr_index % n
 
@@ -194,6 +201,8 @@ def schedule_weighted_fair(
             if not flow.q:
                 continue
             pkt = flow.q[0]
+            quality = max(flow.channel_quality, 0.01)
+            bits_per_rb = max(1, int(round(slice_obj.phi_inst * quality)))
             tx_bits = min(bits_per_rb, pkt.bits_left)
             pkt.bits_left -= tx_bits
             flow.total_sent_bits += tx_bits
@@ -259,444 +268,6 @@ class Metrics:
                 self.tp_win_bits[name] = 0
 
 
-FONT_5X7: Dict[str, Sequence[str]] = {
-    " ": [
-        "00000",
-        "00000",
-        "00000",
-        "00000",
-        "00000",
-        "00000",
-        "00000",
-    ],
-    "0": [
-        "01110",
-        "10001",
-        "10011",
-        "10101",
-        "11001",
-        "10001",
-        "01110",
-    ],
-    "1": [
-        "00100",
-        "01100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "01110",
-    ],
-    "2": [
-        "01110",
-        "10001",
-        "00001",
-        "00110",
-        "01000",
-        "10000",
-        "11111",
-    ],
-    "3": [
-        "11110",
-        "00001",
-        "00001",
-        "01110",
-        "00001",
-        "00001",
-        "11110",
-    ],
-    "4": [
-        "00010",
-        "00110",
-        "01010",
-        "10010",
-        "11111",
-        "00010",
-        "00010",
-    ],
-    "5": [
-        "11111",
-        "10000",
-        "11110",
-        "00001",
-        "00001",
-        "10001",
-        "01110",
-    ],
-    "6": [
-        "00110",
-        "01000",
-        "10000",
-        "11110",
-        "10001",
-        "10001",
-        "01110",
-    ],
-    "7": [
-        "11111",
-        "00001",
-        "00010",
-        "00100",
-        "01000",
-        "01000",
-        "01000",
-    ],
-    "8": [
-        "01110",
-        "10001",
-        "10001",
-        "01110",
-        "10001",
-        "10001",
-        "01110",
-    ],
-    "9": [
-        "01110",
-        "10001",
-        "10001",
-        "01111",
-        "00001",
-        "00010",
-        "01100",
-    ],
-    "A": [
-        "01110",
-        "10001",
-        "10001",
-        "11111",
-        "10001",
-        "10001",
-        "10001",
-    ],
-    "B": [
-        "11110",
-        "10001",
-        "10001",
-        "11110",
-        "10001",
-        "10001",
-        "11110",
-    ],
-    "C": [
-        "01110",
-        "10001",
-        "10000",
-        "10000",
-        "10000",
-        "10001",
-        "01110",
-    ],
-    "D": [
-        "11100",
-        "10010",
-        "10001",
-        "10001",
-        "10001",
-        "10010",
-        "11100",
-    ],
-    "E": [
-        "11111",
-        "10000",
-        "10000",
-        "11110",
-        "10000",
-        "10000",
-        "11111",
-    ],
-    "F": [
-        "11111",
-        "10000",
-        "10000",
-        "11110",
-        "10000",
-        "10000",
-        "10000",
-    ],
-    "G": [
-        "01110",
-        "10001",
-        "10000",
-        "10111",
-        "10001",
-        "10001",
-        "01111",
-    ],
-    "H": [
-        "10001",
-        "10001",
-        "10001",
-        "11111",
-        "10001",
-        "10001",
-        "10001",
-    ],
-    "I": [
-        "01110",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "01110",
-    ],
-    "J": [
-        "00111",
-        "00010",
-        "00010",
-        "00010",
-        "00010",
-        "10010",
-        "01100",
-    ],
-    "K": [
-        "10001",
-        "10010",
-        "10100",
-        "11000",
-        "10100",
-        "10010",
-        "10001",
-    ],
-    "L": [
-        "10000",
-        "10000",
-        "10000",
-        "10000",
-        "10000",
-        "10000",
-        "11111",
-    ],
-    "M": [
-        "10001",
-        "11011",
-        "10101",
-        "10101",
-        "10001",
-        "10001",
-        "10001",
-    ],
-    "N": [
-        "10001",
-        "11001",
-        "10101",
-        "10011",
-        "10001",
-        "10001",
-        "10001",
-    ],
-    "O": [
-        "01110",
-        "10001",
-        "10001",
-        "10001",
-        "10001",
-        "10001",
-        "01110",
-    ],
-    "P": [
-        "11110",
-        "10001",
-        "10001",
-        "11110",
-        "10000",
-        "10000",
-        "10000",
-    ],
-    "Q": [
-        "01110",
-        "10001",
-        "10001",
-        "10001",
-        "10101",
-        "10010",
-        "01101",
-    ],
-    "R": [
-        "11110",
-        "10001",
-        "10001",
-        "11110",
-        "10100",
-        "10010",
-        "10001",
-    ],
-    "S": [
-        "01111",
-        "10000",
-        "10000",
-        "01110",
-        "00001",
-        "00001",
-        "11110",
-    ],
-    "T": [
-        "11111",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-    ],
-    "U": [
-        "10001",
-        "10001",
-        "10001",
-        "10001",
-        "10001",
-        "10001",
-        "01110",
-    ],
-    "V": [
-        "10001",
-        "10001",
-        "10001",
-        "10001",
-        "01010",
-        "01010",
-        "00100",
-    ],
-    "W": [
-        "10001",
-        "10001",
-        "10001",
-        "10101",
-        "10101",
-        "10101",
-        "01010",
-    ],
-    "X": [
-        "10001",
-        "01010",
-        "00100",
-        "00100",
-        "00100",
-        "01010",
-        "10001",
-    ],
-    "Y": [
-        "10001",
-        "01010",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-    ],
-    "Z": [
-        "11111",
-        "00001",
-        "00010",
-        "00100",
-        "01000",
-        "10000",
-        "11111",
-    ],
-}
-
-
-class Canvas:
-    def __init__(self, width: int, height: int, background: Tuple[int, int, int, int] = (255, 255, 255, 255)) -> None:
-        self.width = width
-        self.height = height
-        bg = bytes(background)
-        self.pixels = bytearray(bg * (width * height))
-
-    def set_pixel(self, x: int, y: int, color: Tuple[int, int, int, int]) -> None:
-        if 0 <= x < self.width and 0 <= y < self.height:
-            idx = (y * self.width + x) * 4
-            self.pixels[idx : idx + 4] = bytes(color)
-
-    def draw_line(self, x0: float, y0: float, x1: float, y1: float, color: Tuple[int, int, int, int], thickness: int = 1) -> None:
-        x0_i, y0_i = int(round(x0)), int(round(y0))
-        x1_i, y1_i = int(round(x1)), int(round(y1))
-        dx = abs(x1_i - x0_i)
-        dy = -abs(y1_i - y0_i)
-        sx = 1 if x0_i < x1_i else -1
-        sy = 1 if y0_i < y1_i else -1
-        err = dx + dy
-        while True:
-            for tx in range(-(thickness // 2), thickness // 2 + 1):
-                for ty in range(-(thickness // 2), thickness // 2 + 1):
-                    self.set_pixel(x0_i + tx, y0_i + ty, color)
-            if x0_i == x1_i and y0_i == y1_i:
-                break
-            e2 = 2 * err
-            if e2 >= dy:
-                err += dy
-                x0_i += sx
-            if e2 <= dx:
-                err += dx
-                y0_i += sy
-
-    def draw_polyline(self, points: Sequence[Tuple[float, float]], color: Tuple[int, int, int, int], thickness: int = 1) -> None:
-        for i in range(len(points) - 1):
-            self.draw_line(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1], color, thickness)
-
-    def draw_text(self, x: int, y: int, text: str, color: Tuple[int, int, int, int], scale: int = 1) -> None:
-        cursor_x = x
-        upper = text.upper()
-        for ch in upper:
-            pattern = FONT_5X7.get(ch, FONT_5X7[" "])
-            for row_idx, row in enumerate(pattern):
-                for col_idx, bit in enumerate(row):
-                    if bit == "1":
-                        for dx in range(scale):
-                            for dy in range(scale):
-                                self.set_pixel(cursor_x + col_idx * scale + dx, y + row_idx * scale + dy, color)
-            cursor_x += (len(pattern[0]) + 1) * scale
-
-    def draw_rect(self, x0: int, y0: int, x1: int, y1: int, color: Tuple[int, int, int, int]) -> None:
-        for x in range(x0, x1 + 1):
-            self.set_pixel(x, y0, color)
-            self.set_pixel(x, y1, color)
-        for y in range(y0, y1 + 1):
-            self.set_pixel(x0, y, color)
-            self.set_pixel(x1, y, color)
-
-    def fill_rect(self, x0: int, y0: int, x1: int, y1: int, color: Tuple[int, int, int, int]) -> None:
-        for y in range(y0, y1):
-            for x in range(x0, x1):
-                self.set_pixel(x, y, color)
-
-
-def write_png(path: str, canvas: Canvas) -> None:
-    stride = canvas.width * 4
-    raw = bytearray()
-    for y in range(canvas.height):
-        raw.append(0)
-        start = y * stride
-        raw.extend(canvas.pixels[start : start + stride])
-    compressed = zlib.compress(bytes(raw))
-
-    def chunk(chunk_type: bytes, data: bytes) -> bytes:
-        length = struct.pack("!I", len(data))
-        crc = zlib.crc32(chunk_type)
-        crc = zlib.crc32(data, crc) & 0xFFFFFFFF
-        crc_bytes = struct.pack("!I", crc)
-        return length + chunk_type + data + crc_bytes
-
-    with open(path, "wb") as fh:
-        fh.write(b"\x89PNG\r\n\x1a\n")
-        ihdr = struct.pack("!IIBBBBB", canvas.width, canvas.height, 8, 6, 0, 0, 0)
-        fh.write(chunk(b"IHDR", ihdr))
-        fh.write(chunk(b"IDAT", compressed))
-        fh.write(chunk(b"IEND", b""))
-
-
-def choose_tick_step(max_value: float, target_ticks: int = 5) -> float:
-    if max_value <= 0:
-        return 1.0
-    raw = max_value / max(1, target_ticks)
-    power = 10 ** int(math.floor(math.log10(raw)))
-    for mult in (1, 2, 5, 10):
-        step = mult * power
-        if step >= raw:
-            return max(1.0, step)
-    return max(1.0, 10 * power)
-
-
 def render_line_chart(
     time_axis: Sequence[float],
     series: Dict[str, Sequence[float]],
@@ -705,92 +276,35 @@ def render_line_chart(
     y_label: str,
     reference_line: Optional[float] = None,
 ) -> None:
-    width, height = 960, 540
-    left, right, top, bottom = 80, 200, 80, 80
-    canvas = Canvas(width, height)
-    colors = [
-        (31, 119, 180, 255),
-        (255, 127, 14, 255),
-        (44, 160, 44, 255),
-        (214, 39, 40, 255),
-    ]
-
-    plot_width = width - left - right
-    plot_height = height - top - bottom
-
-    if not time_axis or all(not values for values in series.values()):
-        write_png(outfile, canvas)
-        return
-
-    x_min = 0.0
-    x_max = max(time_axis)
-    y_max = max(max(values) if values else 0.0 for values in series.values())
-    if reference_line is not None:
-        y_max = max(y_max, reference_line)
-    if y_max <= 0:
-        y_max = 1.0
-    else:
-        y_max *= 1.05
-
-    x_range = max(x_max - x_min, 1e-6)
-    y_min = 0.0
-    y_range = max(y_max - y_min, 1e-6)
-
-    def to_pixel(x_val: float, y_val: float) -> Tuple[float, float]:
-        x = left + (x_val - x_min) / x_range * plot_width
-        y = top + plot_height - (y_val - y_min) / y_range * plot_height
-        return x, y
-
-    axis_color = (0, 0, 0, 255)
-    grid_color = (220, 220, 220, 255)
-
-    # Axes
-    canvas.draw_line(left, top, left, top + plot_height, axis_color)
-    canvas.draw_line(left, top + plot_height, left + plot_width, top + plot_height, axis_color)
-
-    x_step = choose_tick_step(x_max)
-    tick = 0.0
-    while tick <= x_max + 1e-6:
-        px, py = to_pixel(tick, 0.0)
-        canvas.draw_line(px, py, px, py + 6, axis_color)
-        if tick > 0:
-            canvas.draw_line(px, top, px, top + plot_height, grid_color)
-        label = str(int(round(tick)))
-        canvas.draw_text(int(px) - 6, int(py) + 10, label, axis_color)
-        tick += x_step
-
-    y_step = choose_tick_step(y_max)
-    tick = y_min
-    while tick <= y_max + 1e-6:
-        px0, py0 = to_pixel(0.0, tick)
-        canvas.draw_line(px0 - 6, py0, px0, py0, axis_color)
-        if tick > y_min:
-            canvas.draw_line(left, py0, left + plot_width, py0, grid_color)
-        label = str(int(round(tick)))
-        canvas.draw_text(left - 50, int(py0) - 4, label, axis_color)
-        tick += y_step
-
-    if reference_line is not None:
-        _, ref_y = to_pixel(0.0, reference_line)
-        canvas.draw_line(left, ref_y, left + plot_width, ref_y, (200, 0, 0, 255))
-        canvas.draw_text(left + plot_width + 10, int(ref_y) - 4, "DEADLINE", (200, 0, 0, 255))
-
-    # Series lines and legend
-    for idx, (name, values) in enumerate(series.items()):
+    fig, ax = plt.subplots(figsize=(12, 6))
+    plotted_any = False
+    for name, values in series.items():
         if not values:
             continue
-        color = colors[idx % len(colors)]
-        points = [to_pixel(time_axis[i], values[i]) for i in range(min(len(time_axis), len(values)))]
-        canvas.draw_polyline(points, color, thickness=2)
-        legend_y = top + idx * 20
-        canvas.draw_line(width - right + 10, legend_y + 5, width - right + 40, legend_y + 5, color, thickness=3)
-        canvas.draw_text(width - right + 50, legend_y, name, axis_color)
+        limit = min(len(time_axis), len(values))
+        if limit == 0:
+            continue
+        ax.plot(time_axis[:limit], values[:limit], label=name)
+        plotted_any = True
 
-    canvas.draw_text(left, 30, title, axis_color, scale=2)
-    canvas.draw_text(20, top + plot_height // 2, y_label, axis_color)
-    canvas.draw_text(left + plot_width // 2, height - 30, "TIME S", axis_color)
+    if reference_line is not None:
+        ax.axhline(reference_line, color="red", linestyle="--", linewidth=1.5, label="Deadline")
 
-    write_png(outfile, canvas)
+    ax.set_title(title)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel(y_label)
+    ax.set_xlim(left=0.0)
+    ax.set_ylim(bottom=0.0)
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+
+    if plotted_any or reference_line is not None:
+        ax.legend(loc="upper right")
+    
+    fig.tight_layout()
+    fig.savefig(outfile, dpi=150)
+    plt.close(fig)
 
 
 def plot_throughput(metrics: Metrics, outfile: str, scenario_label: str) -> None:
@@ -829,7 +343,11 @@ def plot_delay(
 def run_scenario(num_vr_apps: int, save_prefix: str, delay_mode: str = "head") -> Dict[str, float]:
     random.seed(SEED)
 
-    slice_a_flows = [Flow(f"app{i + 1}", "vr") for i in range(num_vr_apps)]
+    slice_a_flows = []
+    for i in range(num_vr_apps):
+        quality_idx = min(i, len(VR_CHANNEL_QUALITIES) - 1)
+        channel_quality = VR_CHANNEL_QUALITIES[quality_idx]
+        slice_a_flows.append(Flow(f"app{i + 1}", "vr", channel_quality=channel_quality))
     slice_b_flow = Flow("filesync", "fs")
 
     slice_a = Slice("A", A_R_MIN, PHI_REF_A, slice_a_flows)
@@ -900,12 +418,14 @@ def main() -> None:
     scenario4_stats = run_scenario(num_vr_apps=4, save_prefix="scenario4", delay_mode="head")
 
     print("Scenario S2 average throughput (Mbps):")
-    for name, value in scenario2_stats.items():
-        print(f"  {name}: {value:.2f}")
+    for idx, (name, value) in enumerate(scenario2_stats.items()):
+        quality = VR_CHANNEL_QUALITIES[min(idx, len(VR_CHANNEL_QUALITIES) - 1)]
+        print(f"  {name} (quality={quality:.2f}): {value:.2f}")
 
     print("\nScenario S4 average throughput (Mbps):")
-    for name, value in scenario4_stats.items():
-        print(f"  {name}: {value:.2f}")
+    for idx, (name, value) in enumerate(scenario4_stats.items()):
+        quality = VR_CHANNEL_QUALITIES[min(idx, len(VR_CHANNEL_QUALITIES) - 1)]
+        print(f"  {name} (quality={quality:.2f}): {value:.2f}")
 
 
 if __name__ == "__main__":
