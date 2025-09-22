@@ -29,6 +29,7 @@ WIN_TP = 100  # Throughput window (ms)
 WIN_P99 = 100  # Delay P99 window length
 THROUGHPUT_THRESHOLD_MBPS = 8.0
 DELAY_THRESHOLD_MS = 60.0
+THROUGHPUT_SMOOTHING_WINDOW = 5  # Samples for moving-average smoothing
 
 RB_CAP = 72  # Available RB per TTI before jitter
 B_R_MIN = 20e6  # Slice B minimum rate (bit/s)
@@ -280,6 +281,20 @@ class Metrics:
                 self.tp_series[name].append(mbps)
                 self.tp_win_bits[name] = 0
 
+def smooth_moving_average(values: Sequence[float], window: int) -> List[float]:
+    if window <= 1:
+        return list(values)
+    averaged: List[float] = []
+    acc = 0.0
+    buf: Deque[float] = deque()
+    for value in values:
+        buf.append(value)
+        acc += value
+        if len(buf) > window:
+            acc -= buf.popleft()
+        averaged.append(acc / len(buf))
+    return averaged
+
 
 def render_line_chart(
     time_axis: Sequence[float],
@@ -330,7 +345,11 @@ def render_line_chart(
 
 
 def plot_throughput(metrics: Metrics, outfile: str, scenario_label: str) -> None:
-    series = {name.upper(): metrics.tp_series[name] for name in metrics.flow_names}
+    series: Dict[str, Sequence[float]] = {}
+    for name in metrics.flow_names:
+        series[name.upper()] = smooth_moving_average(
+            metrics.tp_series[name], THROUGHPUT_SMOOTHING_WINDOW
+        )
     render_line_chart(
         metrics.tp_time_axis,
         series,
