@@ -27,7 +27,10 @@ DT_MS = 1  # TTI granularity = 1 ms
 T_SIM = 40_000  # 40 seconds
 WIN_TP = 100  # Throughput window (ms)
 WIN_P99 = 100  # Delay P99 window length
-RB_CAP = 260  # Available RB per TTI before jitter
+THROUGHPUT_THRESHOLD_MBPS = 8.0
+DELAY_THRESHOLD_MS = 60.0
+
+RB_CAP = 36  # Available RB per TTI before jitter
 B_R_MIN = 20e6  # Slice B minimum rate (bit/s)
 A_R_MIN = 24e6  # Slice A minimum rate (bit/s)
 PHI_REF_A = 800.0  # Reference spectral efficiency (bit/RB)
@@ -40,7 +43,7 @@ VR_FPS = 60
 VR_FRAME_MS = round(1000 / VR_FPS)  # ~17 ms
 VR_RATE_PER_APP = 12e6
 VR_JITTER = 0.15
-VR_DEADLINE = 20  # ms
+VR_DEADLINE = int(DELAY_THRESHOLD_MS)  # ms
 # Deterministic spectral efficiency multipliers for each VR app (1.0 = reference).
 # The defaults represent a mixed deployment with one high-quality and one
 # low-quality channel user. Specific scenarios can override this list to model
@@ -285,6 +288,7 @@ def render_line_chart(
     title: str,
     y_label: str,
     reference_line: Optional[float] = None,
+    reference_label: str = "Deadline",
 ) -> None:
     if plt is None:
         return
@@ -300,7 +304,13 @@ def render_line_chart(
         plotted_any = True
 
     if reference_line is not None:
-        ax.axhline(reference_line, color="red", linestyle="--", linewidth=1.5, label="Deadline")
+        ax.axhline(
+            reference_line,
+            color="red",
+            linestyle="--",
+            linewidth=1.5,
+            label=reference_label,
+        )
 
     ax.set_title(title)
     ax.set_xlabel("Time (s)")
@@ -328,6 +338,8 @@ def plot_throughput(metrics: Metrics, outfile: str, scenario_label: str) -> None
         outfile,
         title=f"{scenario_label} THROUGHPUT",
         y_label="THROUGHPUT MBPS",
+        reference_line=THROUGHPUT_THRESHOLD_MBPS,
+        reference_label="Threshold",
     )
 
 
@@ -347,6 +359,7 @@ def plot_delay(
         title=f"{scenario_label} DELAY",
         y_label=ylabel,
         reference_line=deadline,
+        reference_label="Threshold",
     )
 
 
@@ -421,7 +434,7 @@ def run_scenario(
         f"{save_prefix}_delay.png",
         scenario_label,
         delay_mode=delay_mode,
-        deadline=VR_DEADLINE if delay_mode == "head" else None,
+        deadline=DELAY_THRESHOLD_MS if delay_mode == "head" else None,
     )
 
     stats = {}
@@ -450,16 +463,20 @@ def main() -> None:
         channel_qualities=scenario4_qualities,
     )
 
-    target_mbps = VR_RATE_PER_APP / 1e6
+    target_mbps = THROUGHPUT_THRESHOLD_MBPS
 
-    print("Scenario S2 average throughput (Mbps):")
+    print(
+        f"Scenario S2 average throughput (Mbps) vs threshold {target_mbps:.1f}:"
+    )
     for idx, (name, value) in enumerate(scenario2_stats.items()):
         quality = scenario2_qualities[min(idx, len(scenario2_qualities) - 1)]
         meets_qos = value >= target_mbps
         status = "OK" if meets_qos else "VIOLATION"
         print(f"  {name} (quality={quality:.2f}): {value:.2f} -> {status}")
 
-    print("\nScenario S4 average throughput (Mbps):")
+    print(
+        f"\nScenario S4 average throughput (Mbps) vs threshold {target_mbps:.1f}:"
+    )
     for idx, (name, value) in enumerate(scenario4_stats.items()):
         quality = scenario4_qualities[min(idx, len(scenario4_qualities) - 1)]
         meets_qos = value >= target_mbps
