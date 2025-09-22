@@ -1,16 +1,23 @@
 """End-to-end simulator for the VR/FileSync slicing scenarios."""
 from __future__ import annotations
 
+import importlib.util
 import math
 import random
 from collections import deque
 from typing import Deque, Dict, Iterable, List, Optional, Sequence
 
-import matplotlib
+HAS_MATPLOTLIB = importlib.util.find_spec("matplotlib") is not None
+if HAS_MATPLOTLIB:
+    import matplotlib  # type: ignore
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # type: ignore
+    from matplotlib.ticker import MaxNLocator  # type: ignore
+else:
+    matplotlib = None  # type: ignore
+    plt = None  # type: ignore
+    MaxNLocator = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Global parameters
@@ -35,7 +42,10 @@ VR_RATE_PER_APP = 12e6
 VR_JITTER = 0.15
 VR_DEADLINE = 20  # ms
 # Deterministic spectral efficiency multipliers for each VR app (1.0 = reference).
-VR_CHANNEL_QUALITIES = [1.1, 0.95, 0.22, 0.12, 0.08, 0.05]
+# The defaults represent a mixed deployment with one high-quality and one
+# low-quality channel user. Specific scenarios can override this list to model
+# different user mixes.
+VR_CHANNEL_QUALITIES = [1.1, 0.5]
 
 # File sync traffic
 FS_MEAN_PKT_BITS = 12_000
@@ -276,6 +286,8 @@ def render_line_chart(
     y_label: str,
     reference_line: Optional[float] = None,
 ) -> None:
+    if plt is None:
+        return
     fig, ax = plt.subplots(figsize=(12, 6))
     plotted_any = False
     for name, values in series.items():
@@ -296,8 +308,9 @@ def render_line_chart(
     ax.set_xlim(left=0.0)
     ax.set_ylim(bottom=0.0)
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+    if MaxNLocator is not None:
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
 
     if plotted_any or reference_line is not None:
         ax.legend(loc="upper right")
@@ -340,13 +353,20 @@ def plot_delay(
 # ---------------------------------------------------------------------------
 # Simulation driver
 # ---------------------------------------------------------------------------
-def run_scenario(num_vr_apps: int, save_prefix: str, delay_mode: str = "head") -> Dict[str, float]:
+def run_scenario(
+    num_vr_apps: int,
+    save_prefix: str,
+    delay_mode: str = "head",
+    channel_qualities: Optional[Sequence[float]] = None,
+) -> Dict[str, float]:
     random.seed(SEED)
+
+    qualities = channel_qualities if channel_qualities is not None else VR_CHANNEL_QUALITIES
 
     slice_a_flows = []
     for i in range(num_vr_apps):
-        quality_idx = min(i, len(VR_CHANNEL_QUALITIES) - 1)
-        channel_quality = VR_CHANNEL_QUALITIES[quality_idx]
+        quality_idx = min(i, len(qualities) - 1)
+        channel_quality = qualities[quality_idx]
         slice_a_flows.append(Flow(f"app{i + 1}", "vr", channel_quality=channel_quality))
     slice_b_flow = Flow("filesync", "fs")
 
@@ -414,18 +434,37 @@ def run_scenario(num_vr_apps: int, save_prefix: str, delay_mode: str = "head") -
 # Main entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    scenario2_stats = run_scenario(num_vr_apps=2, save_prefix="scenario2", delay_mode="head")
-    scenario4_stats = run_scenario(num_vr_apps=4, save_prefix="scenario4", delay_mode="head")
+    scenario2_qualities = [1.1, 0.5]
+    scenario4_qualities = [1.1, 1.1, 0.5, 0.5]
+
+    scenario2_stats = run_scenario(
+        num_vr_apps=2,
+        save_prefix="scenario2",
+        delay_mode="head",
+        channel_qualities=scenario2_qualities,
+    )
+    scenario4_stats = run_scenario(
+        num_vr_apps=4,
+        save_prefix="scenario4",
+        delay_mode="head",
+        channel_qualities=scenario4_qualities,
+    )
+
+    target_mbps = VR_RATE_PER_APP / 1e6
 
     print("Scenario S2 average throughput (Mbps):")
     for idx, (name, value) in enumerate(scenario2_stats.items()):
-        quality = VR_CHANNEL_QUALITIES[min(idx, len(VR_CHANNEL_QUALITIES) - 1)]
-        print(f"  {name} (quality={quality:.2f}): {value:.2f}")
+        quality = scenario2_qualities[min(idx, len(scenario2_qualities) - 1)]
+        meets_qos = value >= target_mbps
+        status = "OK" if meets_qos else "VIOLATION"
+        print(f"  {name} (quality={quality:.2f}): {value:.2f} -> {status}")
 
     print("\nScenario S4 average throughput (Mbps):")
     for idx, (name, value) in enumerate(scenario4_stats.items()):
-        quality = VR_CHANNEL_QUALITIES[min(idx, len(VR_CHANNEL_QUALITIES) - 1)]
-        print(f"  {name} (quality={quality:.2f}): {value:.2f}")
+        quality = scenario4_qualities[min(idx, len(scenario4_qualities) - 1)]
+        meets_qos = value >= target_mbps
+        status = "OK" if meets_qos else "VIOLATION"
+        print(f"  {name} (quality={quality:.2f}): {value:.2f} -> {status}")
 
 
 if __name__ == "__main__":
