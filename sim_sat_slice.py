@@ -30,7 +30,7 @@ WIN_P99 = 100  # Delay P99 window length
 THROUGHPUT_THRESHOLD_MBPS = 8.0
 DELAY_THRESHOLD_MS = 60.0
 
-RB_CAP = 36  # Available RB per TTI before jitter
+RB_CAP = 72  # Available RB per TTI before jitter
 B_R_MIN = 20e6  # Slice B minimum rate (bit/s)
 A_R_MIN = 24e6  # Slice A minimum rate (bit/s)
 PHI_REF_A = 800.0  # Reference spectral efficiency (bit/RB)
@@ -312,7 +312,6 @@ def render_line_chart(
             label=reference_label,
         )
 
-    ax.set_title(title)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel(y_label)
     ax.set_xlim(left=0.0)
@@ -339,7 +338,7 @@ def plot_throughput(metrics: Metrics, outfile: str, scenario_label: str) -> None
         title=f"{scenario_label} THROUGHPUT",
         y_label="THROUGHPUT MBPS",
         reference_line=THROUGHPUT_THRESHOLD_MBPS,
-        reference_label="Threshold",
+        reference_label=f"{THROUGHPUT_THRESHOLD_MBPS:.0f} Mbps",
     )
 
 
@@ -447,8 +446,8 @@ def run_scenario(
 # Main entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    scenario2_qualities = [1.1, 0.5]
-    scenario4_qualities = [1.1, 1.1, 0.5, 0.5]
+    scenario2_qualities = [1.5, 1.35]
+    scenario4_qualities = [1.5, 1.35, 0.8, 0.6]
 
     scenario2_stats = run_scenario(
         num_vr_apps=2,
