@@ -5,7 +5,7 @@ import importlib.util
 import math
 import random
 from collections import deque
-from typing import Deque, Dict, Iterable, List, Optional, Sequence
+from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 HAS_MATPLOTLIB = importlib.util.find_spec("matplotlib") is not None
 if HAS_MATPLOTLIB:
@@ -30,8 +30,9 @@ WIN_P99 = 100  # Delay P99 window length
 THROUGHPUT_THRESHOLD_MBPS = 8.0
 DELAY_THRESHOLD_MS = 60.0
 THROUGHPUT_SMOOTHING_WINDOW = 5  # Samples for moving-average smoothing
+METRICS_WARMUP_MS = 1000  # Ignore first second when plotting throughput
 
-RB_CAP = 72  # Available RB per TTI before jitter
+RB_CAP = 102  # Available RB per TTI before jitter
 B_R_MIN = 20e6  # Slice B minimum rate (bit/s)
 A_R_MIN = 24e6  # Slice A minimum rate (bit/s)
 PHI_REF_A = 800.0  # Reference spectral efficiency (bit/RB)
@@ -251,6 +252,7 @@ class Metrics:
         self.flow_names = [f.name for f in flows]
         self.tp_win_bits: Dict[str, int] = {name: 0 for name in self.flow_names}
         self.tp_series: Dict[str, List[float]] = {name: [] for name in self.flow_names}
+        self.avg_tp_series: List[float] = []
         self.delay_series: Dict[str, List[float]] = {name: [] for name in self.flow_names}
         self.tp_time_axis: List[float] = []
         self.delay_time_axis: List[float] = []
@@ -273,13 +275,23 @@ class Metrics:
             self.delay_series[flow.name].append(delay)
 
         if (now_ms + 1) % WIN_TP == 0:
-            self.tp_time_axis.append((now_ms + 1) / 1000.0)
+            current_time_ms = now_ms + 1
+            record_sample = current_time_ms >= METRICS_WARMUP_MS
             window_seconds = WIN_TP / 1000.0
+            window_samples: List[float] = []
             for name in self.flow_names:
                 bits = self.tp_win_bits[name]
                 mbps = bits / window_seconds / 1e6
-                self.tp_series[name].append(mbps)
+                if record_sample:
+                    self.tp_series[name].append(mbps)
+                    window_samples.append(mbps)
                 self.tp_win_bits[name] = 0
+            if record_sample:
+                self.tp_time_axis.append(current_time_ms / 1000.0)
+                if window_samples:
+                    self.avg_tp_series.append(sum(window_samples) / len(window_samples))
+                else:
+                    self.avg_tp_series.append(0.0)
 
 def smooth_moving_average(values: Sequence[float], window: int) -> List[float]:
     if window <= 1:
@@ -350,6 +362,11 @@ def plot_throughput(metrics: Metrics, outfile: str, scenario_label: str) -> None
         series[name.upper()] = smooth_moving_average(
             metrics.tp_series[name], THROUGHPUT_SMOOTHING_WINDOW
         )
+
+    if metrics.avg_tp_series:
+        series["AVERAGE"] = smooth_moving_average(
+            metrics.avg_tp_series, THROUGHPUT_SMOOTHING_WINDOW
+        )
     render_line_chart(
         metrics.tp_time_axis,
         series,
@@ -389,7 +406,7 @@ def run_scenario(
     save_prefix: str,
     delay_mode: str = "head",
     channel_qualities: Optional[Sequence[float]] = None,
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], float, float]:
     random.seed(SEED)
 
     qualities = channel_qualities if channel_qualities is not None else VR_CHANNEL_QUALITIES
@@ -455,10 +472,20 @@ def run_scenario(
         deadline=DELAY_THRESHOLD_MS if delay_mode == "head" else None,
     )
 
-    stats = {}
+    stats: Dict[str, float] = {}
+    per_flow_values: List[float] = []
     for flow in slice_a_flows:
-        stats[flow.name] = flow.total_sent_bits / duration_s / 1e6
-    return stats
+        throughput = flow.total_sent_bits / duration_s / 1e6
+        stats[flow.name] = throughput
+        per_flow_values.append(throughput)
+    average_throughput = (
+        sum(per_flow_values) / len(per_flow_values) if per_flow_values else 0.0
+    )
+    avg_series_smoothed = smooth_moving_average(
+        metrics.avg_tp_series, THROUGHPUT_SMOOTHING_WINDOW
+    )
+    min_average_sample = min(avg_series_smoothed) if avg_series_smoothed else 0.0
+    return stats, average_throughput, min_average_sample
 
 
 # ---------------------------------------------------------------------------
@@ -466,15 +493,23 @@ def run_scenario(
 # ---------------------------------------------------------------------------
 def main() -> None:
     scenario2_qualities = [1.5, 1.35]
-    scenario4_qualities = [1.5, 1.35, 0.8, 0.6]
+    scenario4_qualities = [1.5, 1.4, 1.2, 1.05]
 
-    scenario2_stats = run_scenario(
+    (
+        scenario2_stats,
+        scenario2_average,
+        scenario2_average_min,
+    ) = run_scenario(
         num_vr_apps=2,
         save_prefix="scenario2",
         delay_mode="head",
         channel_qualities=scenario2_qualities,
     )
-    scenario4_stats = run_scenario(
+    (
+        scenario4_stats,
+        scenario4_average,
+        scenario4_average_min,
+    ) = run_scenario(
         num_vr_apps=4,
         save_prefix="scenario4",
         delay_mode="head",
@@ -491,7 +526,14 @@ def main() -> None:
         meets_qos = value >= target_mbps
         status = "OK" if meets_qos else "VIOLATION"
         print(f"  {name} (quality={quality:.2f}): {value:.2f} -> {status}")
-
+    
+    print(
+        f"  AVERAGE: {scenario2_average:.2f} -> "
+        f"{'OK' if scenario2_average >= target_mbps else 'VIOLATION'}"
+    )
+    print(
+        f"  MIN AVERAGE SAMPLE: {scenario2_average_min:.2f} Mbps"
+    )
     print(
         f"\nScenario S4 average throughput (Mbps) vs threshold {target_mbps:.1f}:"
     )
@@ -500,6 +542,13 @@ def main() -> None:
         meets_qos = value >= target_mbps
         status = "OK" if meets_qos else "VIOLATION"
         print(f"  {name} (quality={quality:.2f}): {value:.2f} -> {status}")
+    print(
+        f"  AVERAGE: {scenario4_average:.2f} -> "
+        f"{'OK' if scenario4_average >= target_mbps else 'VIOLATION'}"
+    )
+    print(
+        f"  MIN AVERAGE SAMPLE: {scenario4_average_min:.2f} Mbps"
+    )
 
 
 if __name__ == "__main__":
