@@ -363,10 +363,6 @@ def plot_throughput(metrics: Metrics, outfile: str, scenario_label: str) -> None
             metrics.tp_series[name], THROUGHPUT_SMOOTHING_WINDOW
         )
 
-    if metrics.avg_tp_series:
-        series["AVERAGE"] = smooth_moving_average(
-            metrics.avg_tp_series, THROUGHPUT_SMOOTHING_WINDOW
-        )
     render_line_chart(
         metrics.tp_time_axis,
         series,
@@ -397,7 +393,90 @@ def plot_delay(
         reference_label="Threshold",
     )
 
+def plot_combined_throughput(
+    scenarios: Sequence[Tuple[str, Metrics]], outfile: str
+) -> None:
+    if plt is None:
+        return
 
+    fig, ax = plt.subplots(figsize=(12, 6))
+    line_styles = ["-", "--", ":", "-."]
+
+    for scenario_idx, (scenario_label, metrics) in enumerate(scenarios):
+        style = line_styles[scenario_idx % len(line_styles)]
+        for flow_name in metrics.flow_names:
+            values = smooth_moving_average(
+                metrics.tp_series[flow_name], THROUGHPUT_SMOOTHING_WINDOW
+            )
+            if not values:
+                continue
+            limit = min(len(metrics.tp_time_axis), len(values))
+            if limit == 0:
+                continue
+            label = f"{scenario_label}-{flow_name.upper()}"
+            ax.plot(
+                metrics.tp_time_axis[:limit],
+                values[:limit],
+                linestyle=style,
+                linewidth=1.6,
+                label=label,
+            )
+
+    ax.axhline(
+        THROUGHPUT_THRESHOLD_MBPS,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"{THROUGHPUT_THRESHOLD_MBPS:.0f} Mbps",
+    )
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("THROUGHPUT MBPS")
+    ax.set_xlim(left=0.0)
+    ax.set_ylim(bottom=0.0)
+    ax.set_title("PER-APPLICATION THROUGHPUT")
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+    if MaxNLocator is not None:
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+    ax.legend(loc="upper right", ncol=2)
+    fig.tight_layout()
+    fig.savefig(outfile, dpi=150)
+    plt.close(fig)
+
+
+def plot_average_bar(
+    threshold: float, scenario2_avg: float, scenario4_avg: float, outfile: str
+) -> None:
+    if plt is None:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    labels = ["Threshold", "S2 Average", "S4 Average"]
+    values = [threshold, scenario2_avg, scenario4_avg]
+    colors = ["#b0b0b0", "#1f77b4", "#ff7f0e"]
+
+    bars = ax.bar(labels, values, color=colors)
+    ax.set_ylabel("THROUGHPUT MBPS")
+    ax.set_ylim(0, max(values + [threshold]) * 1.2)
+    ax.set_title("AVERAGE THROUGHPUT VS THRESHOLD")
+    ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.7)
+
+    for bar in bars:
+        height = bar.get_height()
+        ax.annotate(
+            f"{height:.1f}",
+            xy=(bar.get_x() + bar.get_width() / 2, height),
+            xytext=(0, 5),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+        )
+
+    fig.tight_layout()
+    fig.savefig(outfile, dpi=150)
+    plt.close(fig)
 # ---------------------------------------------------------------------------
 # Simulation driver
 # ---------------------------------------------------------------------------
@@ -406,7 +485,7 @@ def run_scenario(
     save_prefix: str,
     delay_mode: str = "head",
     channel_qualities: Optional[Sequence[float]] = None,
-) -> Tuple[Dict[str, float], float, float]:
+) -> Tuple[Dict[str, float], float, float, Metrics]:
     random.seed(SEED)
 
     qualities = channel_qualities if channel_qualities is not None else VR_CHANNEL_QUALITIES
@@ -485,7 +564,7 @@ def run_scenario(
         metrics.avg_tp_series, THROUGHPUT_SMOOTHING_WINDOW
     )
     min_average_sample = min(avg_series_smoothed) if avg_series_smoothed else 0.0
-    return stats, average_throughput, min_average_sample
+    return stats, average_throughput, min_average_sample, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -493,12 +572,13 @@ def run_scenario(
 # ---------------------------------------------------------------------------
 def main() -> None:
     scenario2_qualities = [1.5, 1.35]
-    scenario4_qualities = [1.5, 1.4, 1.2, 1.05]
+    scenario4_qualities = [1.45, 1.25, 0.75, 0.55]
 
     (
         scenario2_stats,
         scenario2_average,
         scenario2_average_min,
+        scenario2_metrics,
     ) = run_scenario(
         num_vr_apps=2,
         save_prefix="scenario2",
@@ -509,6 +589,7 @@ def main() -> None:
         scenario4_stats,
         scenario4_average,
         scenario4_average_min,
+        scenario4_metrics,
     ) = run_scenario(
         num_vr_apps=4,
         save_prefix="scenario4",
@@ -548,6 +629,17 @@ def main() -> None:
     )
     print(
         f"  MIN AVERAGE SAMPLE: {scenario4_average_min:.2f} Mbps"
+    )
+
+    plot_combined_throughput(
+        [("S2", scenario2_metrics), ("S4", scenario4_metrics)],
+        outfile="throughput_all.png",
+    )
+    plot_average_bar(
+        THROUGHPUT_THRESHOLD_MBPS,
+        scenario2_average,
+        scenario4_average,
+        outfile="throughput_average_comparison.png",
     )
 
 
