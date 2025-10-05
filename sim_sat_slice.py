@@ -339,6 +339,7 @@ def render_line_chart(
             label=reference_label,
         )
 
+    ax.set_title(title)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel(y_label)
     ax.set_xlim(left=0.0)
@@ -368,7 +369,7 @@ def plot_throughput(metrics: Metrics, outfile: str, scenario_label: str) -> None
         series,
         outfile,
         title=f"{scenario_label} THROUGHPUT",
-        y_label="THROUGHPUT MBPS",
+        y_label="Throughput/Mbps",
         reference_line=THROUGHPUT_THRESHOLD_MBPS,
         reference_label=f"{THROUGHPUT_THRESHOLD_MBPS:.0f} Mbps",
     )
@@ -431,7 +432,7 @@ def plot_combined_throughput(
     )
 
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("THROUGHPUT MBPS")
+    ax.set_ylabel("Throughput/Mbps")
     ax.set_xlim(left=0.0)
     ax.set_ylim(bottom=0.0)
     ax.set_title("PER-APPLICATION THROUGHPUT")
@@ -457,7 +458,7 @@ def plot_average_bar(
     colors = ["#b0b0b0", "#1f77b4", "#ff7f0e"]
 
     bars = ax.bar(labels, values, color=colors)
-    ax.set_ylabel("THROUGHPUT MBPS")
+    ax.set_ylabel("Throughput/Mbps")
     ax.set_ylim(0, max(values + [threshold]) * 1.2)
     ax.set_title("AVERAGE THROUGHPUT VS THRESHOLD")
     ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.7)
@@ -465,6 +466,91 @@ def plot_average_bar(
     for bar in bars:
         height = bar.get_height()
         ax.annotate(
+            f"{height:.1f}",
+            xy=(bar.get_x() + bar.get_width() / 2, height),
+            xytext=(0, 5),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+        )
+
+    fig.tight_layout()
+    fig.savefig(outfile, dpi=150)
+    plt.close(fig)
+
+
+def plot_visio_layout(
+    scenario2_metrics: "Metrics",
+    scenario4_metrics: "Metrics",
+    scenario2_average: float,
+    scenario4_average: float,
+    threshold: float,
+    outfile: str,
+) -> None:
+    if plt is None:
+        return
+
+    fig = plt.figure(figsize=(14, 8))
+    grid = fig.add_gridspec(2, 2, height_ratios=[1.0, 0.9], hspace=0.4, wspace=0.3)
+
+    ax_top_left = fig.add_subplot(grid[0, 0])
+    ax_top_right = fig.add_subplot(grid[0, 1])
+    ax_bottom = fig.add_subplot(grid[1, :])
+
+    def plot_time_series(ax, metrics: "Metrics", title: str) -> None:
+        line_styles = ["-", "--", ":", "-."]
+        for idx, flow_name in enumerate(metrics.flow_names):
+            values = smooth_moving_average(
+                metrics.tp_series[flow_name], THROUGHPUT_SMOOTHING_WINDOW
+            )
+            if not values:
+                continue
+            limit = min(len(metrics.tp_time_axis), len(values))
+            if limit == 0:
+                continue
+            ax.plot(
+                metrics.tp_time_axis[:limit],
+                values[:limit],
+                linestyle=line_styles[idx % len(line_styles)],
+                linewidth=1.6,
+                label=flow_name.upper(),
+            )
+
+        ax.axhline(
+            threshold,
+            color="red",
+            linestyle="--",
+            linewidth=1.5,
+            label=f"{threshold:.0f} Mbps",
+        )
+        ax.set_title(title)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Throughput/Mbps")
+        ax.set_xlim(left=0.0)
+        ax.set_ylim(bottom=0.0)
+        ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+        if MaxNLocator is not None:
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune=None))
+        ax.legend(loc="upper right")
+
+    plot_time_series(ax_top_left, scenario2_metrics, "VR apps X 2")
+    plot_time_series(ax_top_right, scenario4_metrics, "VR apps X 4")
+
+    labels = ["Threshold", "VR apps X 2", "VR apps X 4"]
+    values = [threshold, scenario2_average, scenario4_average]
+    colors = ["#b0b0b0", "#1f77b4", "#ff7f0e"]
+
+    bars = ax_bottom.bar(labels, values, color=colors)
+    ax_bottom.set_title("Avg. throughput")
+    ax_bottom.set_ylabel("Throughput/Mbps")
+    ax_bottom.set_ylim(0, max(values) * 1.2 if values else threshold)
+    ax_bottom.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.7)
+
+    for bar in bars:
+        height = bar.get_height()
+        ax_bottom.annotate(
             f"{height:.1f}",
             xy=(bar.get_x() + bar.get_width() / 2, height),
             xytext=(0, 5),
@@ -640,6 +726,15 @@ def main() -> None:
         scenario2_average,
         scenario4_average,
         outfile="throughput_average_comparison.png",
+    )
+
+    plot_visio_layout(
+        scenario2_metrics,
+        scenario4_metrics,
+        scenario2_average,
+        scenario4_average,
+        THROUGHPUT_THRESHOLD_MBPS,
+        outfile="throughput_visio_layout.png",
     )
 
 
